@@ -1,0 +1,49 @@
+name: "IMDS & Environment Test"
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Test Azure IMDS - instance
+        run: |
+          echo "=== Azure IMDS Instance ==="
+          curl -s -m 2 "http://169.254.169.254/metadata/instance?api-version=2021-02-01&format=json" -H "Metadata: true" 2>&1 || echo "FAILED: instance"
+          
+      - name: Test Azure IMDS - identity token
+        run: |
+          echo "=== Azure IMDS Identity/Token ==="
+          curl -s -m 2 "http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https://management.azure.com/" -H "Metadata: true" 2>&1 || echo "FAILED: identity"
+          
+      - name: Test AWS IMDS
+        run: |
+          echo "=== AWS IMDSv1 ==="
+          curl -s -m 2 "http://169.254.169.254/latest/meta-data/" 2>&1 || echo "FAILED: aws"
+          echo "=== AWS IMDSv2 token ==="
+          TOKEN=$(curl -s -m 2 -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600" 2>&1)
+          echo "Token response: $TOKEN"
+          
+      - name: Test GCP IMDS
+        run: |
+          echo "=== GCP IMDS ==="
+          curl -s -m 2 "http://metadata.google.internal/computeMetadata/v1/instance/" -H "Metadata-Flavor: Google" 2>&1 || echo "FAILED: gcp"
+          
+      - name: GitHub OIDC token
+        run: |
+          echo "=== GitHub OIDC Token Request ==="
+          curl -s "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=api://AzureADTokenExchange"             -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN"             -H "Content-Type: application/json" 2>&1 | head -c 500 || echo "OIDC failed"
+          
+      - name: Runner environment
+        run: |
+          echo "=== Key Environment Variables ==="
+          env | grep -iE 'AZURE|ARM_|MSI|IDENTITY|CLIENT_ID|TENANT|SUBSCRIPTION' | head -20 || echo "No Azure env vars"
+          echo "=== Runner info ==="
+          cat /etc/hostname 2>/dev/null || echo "no hostname"
+          whoami
+          cat /proc/1/cgroup 2>/dev/null | head -5 || echo "no cgroup"
+          ip route 2>/dev/null | head -5 || echo "no routes"
+          curl -s -m 2 "http://169.254.169.254/" 2>&1 | head -20 || echo "169.254.169.254 unreachable"
